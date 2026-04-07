@@ -1,10 +1,23 @@
 import os
 import sys
+import ssl
 import shutil
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
+
+# ─── macOS SSL fix ───────────────────────────────────────────────────────────
+# Python from python.org on macOS doesn't include system CA certs.
+# certifi ships its own bundle; patching the default SSL context fixes
+# "CERTIFICATE_VERIFY_FAILED" errors that yt-dlp raises on macOS.
+try:
+    import certifi
+    ssl._create_default_https_context = lambda: ssl.create_default_context(
+        cafile=certifi.where()
+    )
+except ImportError:
+    pass  # certifi not installed — fall back to OS default (may fail on macOS)
 
 try:
     import yt_dlp
@@ -84,7 +97,7 @@ def _build_ydlp_base_opts() -> dict:
     node = get_nodejs_path()
     if node:
         # --js-runtimes is a top-level yt-dlp option (not an extractor arg)
-        opts["js_runtimes"] = f"nodejs:{node}"
+        opts["js_runtimes"] = {"nodejs": {"cli": node}}
     return opts
 
 
