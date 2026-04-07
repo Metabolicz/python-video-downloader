@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -17,12 +18,74 @@ APP_TITLE   = "Video Downloader"
 APP_VERSION = "1.0"
 DEFAULT_OUT = str(Path.home() / "Downloads")
 
-# ─── When running inside a PyInstaller .app bundle, find bundled ffmpeg ───────
+# ─── Dependency detection ────────────────────────────────────────────────────
+
+# Common install paths to probe when the binary isn't on PATH yet
+_FFMPEG_FALLBACKS = [
+    r"C:\ffmpeg\bin\ffmpeg.exe",
+    r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+    r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+    "/usr/local/bin/ffmpeg",
+    "/opt/homebrew/bin/ffmpeg",
+    "/usr/bin/ffmpeg",
+]
+_NODE_FALLBACKS = [
+    r"C:\Program Files\nodejs\node.exe",
+    r"C:\Program Files (x86)\nodejs\node.exe",
+    "/usr/local/bin/node",
+    "/opt/homebrew/bin/node",
+    "/usr/bin/node",
+]
+
+
+def _find_binary(name: str, fallbacks: list[str]) -> str | None:
+    """Try shutil.which first, then probe known install paths and WinGet."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for path in fallbacks:
+        if os.path.isfile(path):
+            return path
+    # Search inside the WinGet packages directory (winget install ...)
+    winget_pkgs = os.path.join(
+        os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Packages"
+    )
+    exe = name if name.endswith(".exe") else name + ".exe"
+    if os.path.isdir(winget_pkgs):
+        for root, _dirs, files in os.walk(winget_pkgs):
+            if exe in files:
+                return os.path.join(root, exe)
+    return None
+
+
 def get_ffmpeg_path() -> str | None:
+    """Return the ffmpeg executable path, preferring a PyInstaller bundle."""
     if getattr(sys, "frozen", False):
         path = os.path.join(sys._MEIPASS, "ffmpeg")  # type: ignore[attr-defined]
-        return path if os.path.isfile(path) else None
-    return None
+        if os.path.isfile(path):
+            return path
+        path_exe = path + ".exe"
+        if os.path.isfile(path_exe):
+            return path_exe
+    return _find_binary("ffmpeg", _FFMPEG_FALLBACKS)
+
+
+def get_nodejs_path() -> str | None:
+    """Return the node executable path if Node.js is installed."""
+    return _find_binary("node", _NODE_FALLBACKS)
+
+
+def _build_ydlp_base_opts() -> dict:
+    """Return base yt-dlp options shared by every call (ffmpeg + JS runtime)."""
+    opts: dict = {}
+    ffmpeg = get_ffmpeg_path()
+    if ffmpeg:
+        opts["ffmpeg_location"] = ffmpeg
+    node = get_nodejs_path()
+    if node:
+        # --js-runtimes is a top-level yt-dlp option (not an extractor arg)
+        opts["js_runtimes"] = f"nodejs:{node}"
+    return opts
 
 
 # ─── UI helpers ───────────────────────────────────────────────────────────────
@@ -202,10 +265,7 @@ class DownloaderApp(tk.Tk):
 
     def _fetch_thread(self, url: str):
         try:
-            opts = {"quiet": True, "noplaylist": True}
-            ffmpeg = get_ffmpeg_path()
-            if ffmpeg:
-                opts["ffmpeg_location"] = ffmpeg
+            opts = {"quiet": True, "noplaylist": True, **_build_ydlp_base_opts()}
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
@@ -286,15 +346,13 @@ class DownloaderApp(tk.Tk):
             elif d["status"] == "finished":
                 self.after(0, lambda: self._set_status("Processing file…"))
 
-        ffmpeg = get_ffmpeg_path()
         opts: dict = {
             "quiet":          True,
             "noplaylist":     True,
             "outtmpl":        os.path.join(output_dir, "%(title)s.%(ext)s"),
             "progress_hooks": [progress_hook],
+            **_build_ydlp_base_opts(),
         }
-        if ffmpeg:
-            opts["ffmpeg_location"] = ffmpeg
 
         if audio_only:
             opts["format"] = "bestaudio/best"
@@ -335,6 +393,29 @@ class DownloaderApp(tk.Tk):
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
+def _warn_missing_deps():
+    """Show a one-time warning if optional system tools are absent."""
+    missing = []
+    if not get_ffmpeg_path():
+        missing.append(
+            "• ffmpeg  —  required for merging video+audio and MP3 export.\n"
+            "  Download: https://ffmpeg.org/download.html"
+        )
+    if not get_nodejs_path():
+        missing.append(
+            "• Node.js  —  recommended for full YouTube format support.\n"
+            "  Download: https://nodejs.org"
+        )
+    if missing:
+        body = (
+            "Some optional dependencies were not found on your PATH.\n"
+            "The downloader will still work, but some features may be limited.\n\n"
+            + "\n\n".join(missing)
+        )
+        messagebox.showwarning(APP_TITLE, body)
+
+
 if __name__ == "__main__":
     app = DownloaderApp()
+    app.after(200, _warn_missing_deps)   # show warning after the window appears
     app.mainloop()

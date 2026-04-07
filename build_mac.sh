@@ -55,19 +55,29 @@ fi
 FFMPEG_PATH=$(command -v ffmpeg)
 success "ffmpeg found at: $FFMPEG_PATH"
 
-# ── 4. Set up Python virtual environment ──────────────────────────────────────
+# ── 4. Install Node.js ────────────────────────────────────────────────────────
+info "Checking Node.js…"
+if ! command -v node &>/dev/null; then
+    info "Installing Node.js via Homebrew…"
+    brew install node
+fi
+
+NODE_PATH=$(command -v node)
+success "Node.js found at: $NODE_PATH"
+
+# ── 5. Set up Python virtual environment ─────────────────────────────────────
 info "Setting up Python virtual environment…"
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip --quiet
 success "Virtual environment ready."
 
-# ── 5. Install Python dependencies ────────────────────────────────────────────
+# ── 6. Install Python dependencies ────────────────────────────────────────────
 info "Installing Python dependencies (yt-dlp, pyinstaller)…"
 pip install -r requirements.txt --quiet
 success "Dependencies installed."
 
-# ── 6. Build the .app with PyInstaller ───────────────────────────────────────
+# ── 7. Build the .app with PyInstaller ───────────────────────────────────────
 info "Building the macOS .app bundle (this will take a minute)…"
 
 APP_NAME="Video Downloader"
@@ -86,7 +96,7 @@ pyinstaller \
     $ICON_ARG \
     downloader.py
 
-# ── 7. Done ───────────────────────────────────────────────────────────────────
+# ── 8. Done ───────────────────────────────────────────────────────────────────
 APP_PATH="$(pwd)/dist/${APP_NAME}.app"
 
 echo ""
