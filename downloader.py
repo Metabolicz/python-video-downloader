@@ -96,8 +96,9 @@ def _build_ydlp_base_opts() -> dict:
         opts["ffmpeg_location"] = ffmpeg
     node = get_nodejs_path()
     if node:
-        # --js-runtimes is a top-level yt-dlp option (not an extractor arg)
-        opts["js_runtimes"] = {"nodejs": {"cli": node}}
+        # --js-runtimes is a top-level yt-dlp option
+        opts["js_runtimes"] = {"node": {"cli": node}}
+        opts["remote_components"] = ["ejs:github"]
     return opts
 
 
@@ -291,7 +292,10 @@ class DownloaderApp(tk.Tk):
                 size_str = f"{size / 1_000_000:.1f} MB" if size else "N/A"
                 vcodec   = fmt.get("vcodec", "?")
                 acodec   = fmt.get("acodec", "?")
-                labels.append(f"{res}  |  {ext}  |  {size_str}  |  v:{vcodec} / a:{acodec}")
+                # Flag video-only streams so the user knows audio will be merged
+                no_audio = acodec in ("none", None, "")
+                merge_tag = "  ⚠ video only — audio will be merged" if no_audio else ""
+                labels.append(f"{res}  |  {ext}  |  {size_str}  |  v:{vcodec} / a:{acodec}{merge_tag}")
 
             title = info.get("title", "Unknown")
             self.after(0, lambda: self._on_formats_ready(formats, labels, title))
@@ -325,12 +329,29 @@ class DownloaderApp(tk.Tk):
             messagebox.showwarning(APP_TITLE, "Please enter a URL.")
             return
 
+        # Determine format and whether the stream has audio — do this in the
+        # main thread so Tkinter widget access is safe.
+        has_audio = True
         if not audio_only:
             idx = self.format_combo.current()
             if idx < 0 or not self._formats:
                 messagebox.showwarning(APP_TITLE, "Please fetch and select a format first.")
                 return
-            format_id = self._formats[idx]["format_id"]
+            selected_fmt = self._formats[idx]
+            format_id    = selected_fmt["format_id"]
+            acodec       = selected_fmt.get("acodec", "none")
+            has_audio    = acodec not in ("none", None, "")
+
+            # Warn early if merging is needed but FFmpeg is missing.
+            if not has_audio and not get_ffmpeg_path():
+                messagebox.showerror(
+                    APP_TITLE,
+                    "This format has no audio track and needs to be merged with audio.\n\n"
+                    "FFmpeg is required for merging but was not found on your system.\n"
+                    "Please install FFmpeg and try again.\n\n"
+                    "Download: https://ffmpeg.org/download.html",
+                )
+                return
         else:
             format_id = None
 
@@ -340,11 +361,11 @@ class DownloaderApp(tk.Tk):
         self._set_status("Starting download…")
         threading.Thread(
             target=self._download_thread,
-            args=(url, format_id, output_dir, audio_only),
+            args=(url, format_id, output_dir, audio_only, has_audio),
             daemon=True,
         ).start()
 
-    def _download_thread(self, url: str, format_id: str | None, output_dir: str, audio_only: bool):
+    def _download_thread(self, url: str, format_id: str | None, output_dir: str, audio_only: bool, has_audio: bool = True):
         def progress_hook(d: dict):
             if d["status"] == "downloading":
                 total      = d.get("total_bytes") or d.get("total_bytes_estimate")
@@ -374,8 +395,15 @@ class DownloaderApp(tk.Tk):
                 "preferredcodec":  "mp3",
                 "preferredquality": "192",
             }]
-        else:
+        elif has_audio:
+            # Stream already contains audio — download as-is.
             opts["format"] = format_id
+        else:
+            # Video-only DASH stream: merge with best available audio via FFmpeg.
+            # Prefer m4a (AAC) audio to ensure compatibility with QuickTime and 
+            # Windows native players, preventing them from choking on Opus audio.
+            opts["format"]               = f"{format_id}+bestaudio[ext=m4a]/bestaudio/best"
+            opts["merge_output_format"]  = "mp4"
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
